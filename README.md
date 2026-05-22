@@ -26,8 +26,6 @@ python webgl_demo.py
 
 This writes `./demo/index.html`. Open it in a browser to interact with the WebGL demo. 
 
-> **Note:** The generated HTML loads Three.js at runtime, so an internet connection is needed when viewing the demo in a browser.
-
 ## Folder structure
 
 ```
