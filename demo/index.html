@@ -1,0 +1,1058 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>2026-05-21 Demo</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
+               font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+               background: #f4f4f5; color: #222; }
+  #canvas-wrap { position: absolute; top: 0; left: 0; right: 0; bottom: 200px;
+                 transition: right 0.2s ease; }
+  body.has-right-panel #canvas-wrap { right: 40%; }
+  #right-panel { position: absolute; top: 0; right: 0; width: 40%; bottom: 200px;
+                 background: white; border-left: 1px solid #ddd;
+                 display: none; box-sizing: border-box; padding: 12px 16px;
+                 overflow: hidden; }
+  body.has-right-panel #right-panel { display: flex; flex-direction: column; }
+  #right-title { font-size: 13px; color: #333; font-weight: 600;
+                 margin-bottom: 4px; }
+  #right-subtitle { font-size: 12px; color: #666;
+                    font-family: 'SF Mono', Menlo, monospace;
+                    margin-bottom: 8px; min-height: 18px; }
+  #right-canvas-wrap { flex: 1; position: relative; }
+  #right-canvas { width: 100%; height: 100%; display: block; }
+  canvas { display: block; }
+  #controls { position: absolute; bottom: 0; left: 0; right: 0; height: 200px;
+              padding: 12px 20px; background: white;
+              border-top: 1px solid #ddd; box-sizing: border-box;
+              display: grid; grid-template-columns: 1fr 1fr; gap: 10px 32px;
+              align-items: center; }
+  .ctrl { display: grid; grid-template-columns: 130px 1fr 70px;
+          align-items: center; gap: 12px; }
+  .ctrl label { font-size: 13px; color: #555; font-weight: 500; }
+  .ctrl .value { font-size: 13px; font-family: 'SF Mono', Menlo, monospace;
+                 color: #185FA5; text-align: right; }
+  input[type=range] { width: 100%; }
+  select { padding: 4px 8px; font-size: 13px; font-family: inherit;
+           border: 1px solid #ccc; border-radius: 4px; background: white;
+           cursor: pointer; }
+  .buttons { display: flex; gap: 8px; align-items: center; }
+  button { padding: 6px 12px; font-size: 12px;
+           border: 1px solid #ccc; border-radius: 4px; background: white;
+           cursor: pointer; font-family: inherit; }
+  button:hover { background: #f0f0f0; }
+  button.active { background: #185FA5; color: white; border-color: #185FA5; }
+  #status { font-size: 12px; color: #666;
+            font-family: 'SF Mono', Menlo, monospace; }
+</style>
+</head>
+<body>
+<div id="canvas-wrap"></div>
+<div id="right-panel">
+  <div id="right-title">&nbsp;</div>
+  <div id="right-subtitle">&nbsp;</div>
+  <div id="right-canvas-wrap"><canvas id="right-canvas"></canvas></div>
+</div>
+<div id="controls">
+  <div class="ctrl">
+    <label>sampler</label>
+    <select id="sampler-select"></select>
+    <span></span>
+  </div>
+  <div class="buttons">
+    <button id="play-btn">▶ Play</button>
+    <button id="pause-btn">❚❚ Pause</button>
+    <button id="reset-btn">↺ Reset</button>
+    <span style="margin-left:12px; font-size:12px; color:#555;">speed:</span>
+    <button class="speed-btn" data-speed="1000">slow</button>
+    <button class="speed-btn active" data-speed="80">med</button>
+    <button class="speed-btn" data-speed="30">fast</button>
+    <span id="status" style="margin-left:auto;"></span>
+  </div>
+  <div id="sampler-sliders-A"></div>
+  <div id="sampler-sliders-B"></div>
+  <div class="ctrl">
+    <label>iterations</label>
+    <input type="range" id="iter-slider" min="1" max="500" step="1" value="200">
+    <span class="value" id="iter-value">200</span>
+  </div>
+  <div class="ctrl">
+    <label>correlation ρ</label>
+    <input type="range" id="rho-slider" min="0" max="0.99" step="0.01" value="0.50">
+    <span class="value" id="rho-value">0.50</span>
+  </div>
+</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const DATA = {"x_min": -5.0, "x_max": 5.0, "y_min": -5.0, "y_max": 5.0, "n_grid": 200, "z_clip": 5.0, "rho_default": 0.5, "x0": [-2.5, -2.5], "default_speed_ms": 80, "n_iter": 200, "default_sampler": "mh", "samplers": [{"key": "mh", "label": "MH", "sliders": [{"id": "sigma", "label": "proposal \u03c3", "min": 0.01, "max": 1.0, "step": 0.01, "default": 0.5}], "right_panel": "mh"}, {"key": "mala", "label": "Langevin (MALA)", "sliders": [{"id": "eps", "label": "step size \u03b5", "min": 0.01, "max": 1.0, "step": 0.01, "default": 0.5}], "right_panel": "mala"}, {"key": "hmc", "label": "HMC", "sliders": [{"id": "L", "label": "trajectory L", "min": 1, "max": 50, "step": 1, "default": 20}, {"id": "eps", "label": "step size \u03b5", "min": 0.01, "max": 1.0, "step": 0.01, "default": 0.5}], "right_panel": "momentum"}]};
+
+const SX = (DATA.x_max - DATA.x_min);
+const SY = (DATA.y_max - DATA.y_min);
+const WORLD_W = 10;
+const WORLD_D = 10;
+const Z_SCALE = 0.55;
+
+const canvasWrap = document.getElementById('canvas-wrap');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xb8b8b8);
+
+const camera = new THREE.PerspectiveCamera(
+  45, canvasWrap.clientWidth / canvasWrap.clientHeight, 0.1, 200);
+camera.position.set(-4.0, 9.5, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(canvasWrap.clientWidth, canvasWrap.clientHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+canvasWrap.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.target.set(0.2, -2.0, -0.4);
+camera.up.set(0.00, 1.00, 0.00);
+
+const grid = new THREE.GridHelper(WORLD_W * 1.4, 14, 0x666666, 0x808080);
+grid.position.y = -0.4;
+scene.add(grid);
+
+const axisMat = new THREE.LineBasicMaterial({ color: 0x2a4ea8, linewidth: 2 });
+const axisLenX = WORLD_W * 0.6;
+const axisLenZ = WORLD_D * 0.6;
+const axisY = -0.38;
+const axisXGeo = new THREE.BufferGeometry().setFromPoints([
+  new THREE.Vector3(-axisLenX, axisY, 0),
+  new THREE.Vector3(axisLenX, axisY, 0),
+]);
+const axisZGeo = new THREE.BufferGeometry().setFromPoints([
+  new THREE.Vector3(0, axisY, -axisLenZ),
+  new THREE.Vector3(0, axisY, axisLenZ),
+]);
+scene.add(new THREE.Line(axisXGeo, axisMat));
+scene.add(new THREE.Line(axisZGeo, axisMat));
+
+function worldFromData(dx, dy, height) {
+  const nx = (dx - DATA.x_min) / SX;
+  const ny = (dy - DATA.y_min) / SY;
+  return [
+    (nx - 0.5) * WORLD_W,
+    height,
+    (ny - 0.5) * WORLD_D,
+  ];
+}
+
+function heightFromU(u) {
+  return Math.min(u, DATA.z_clip) * Z_SCALE;
+}
+
+let currentRho = DATA.rho_default;
+
+function Ufn(x0, x1) {
+  const c = 1.0 - currentRho * currentRho;
+  return 0.5 * (x0*x0 - 2*currentRho*x0*x1 + x1*x1) / c;
+}
+function gradUfn(x0, x1) {
+  const c = 1.0 - currentRho * currentRho;
+  return [(x0 - currentRho*x1) / c, (x1 - currentRho*x0) / c];
+}
+
+function applySurfaceHeights(geo) {
+  const N = DATA.n_grid;
+  const xmin = DATA.x_min, xmax = DATA.x_max;
+  const ymin = DATA.y_min, ymax = DATA.y_max;
+  const dx = (xmax - xmin) / (N - 1);
+  const dy = (ymax - ymin) / (N - 1);
+  const pos = geo.attributes.position;
+  for (let j = 0; j < N; j++) {
+    const y = ymin + j * dy;
+    for (let i = 0; i < N; i++) {
+      const x = xmin + i * dx;
+      pos.setY(j * N + i, heightFromU(Ufn(x, y)));
+    }
+  }
+  pos.needsUpdate = true;
+}
+
+function buildSurface() {
+  const N = DATA.n_grid;
+  const geo = new THREE.PlaneGeometry(WORLD_W, WORLD_D, N - 1, N - 1);
+  geo.rotateX(-Math.PI / 2);
+  applySurfaceHeights(geo);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      zScale: { value: Z_SCALE },
+      zClip:  { value: DATA.z_clip },
+      ringSpacing: { value: 0.4 },
+    },
+    vertexShader: `
+      varying float vU;
+      void main() {
+        vU = position.y / ${Z_SCALE.toFixed(4)};
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float zClip;
+      uniform float ringSpacing;
+      varying float vU;
+      void main() {
+        if (vU >= zClip - 0.05) discard;
+        float t = clamp(vU / zClip, 0.0, 1.0);
+        float base = mix(0.10, 0.92, t);
+        float r = fract(vU / ringSpacing);
+        float ringDist = min(r, 1.0 - r);
+        float ring = 1.0 - smoothstep(0.0, 0.06, ringDist);
+        float shade = clamp(base + ring * 0.55, 0.0, 1.0);
+        float alpha = mix(0.95, 0.0, t);
+        gl_FragColor = vec4(vec3(shade), alpha);
+      }
+    `,
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  return new THREE.Mesh(geo, mat);
+}
+
+const surface = buildSurface();
+scene.add(surface);
+
+const trailMat = new THREE.LineBasicMaterial({ color: 0xFF1744, linewidth: 2 });
+const trailGeo = new THREE.BufferGeometry();
+trailGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * 200), 3));
+trailGeo.setDrawRange(0, 0);
+const trail = new THREE.Line(trailGeo, trailMat);
+scene.add(trail);
+
+const puckGeo = new THREE.SphereGeometry(0.06, 16, 16);
+const puckMat = new THREE.MeshBasicMaterial({ color: 0xD85A30 });
+const puck = new THREE.Mesh(puckGeo, puckMat);
+scene.add(puck);
+
+const samplesMat = new THREE.PointsMaterial({
+  color: 0x10B981, size: 0.12, sizeAttenuation: true,
+  transparent: true, opacity: 0.95, depthTest: false,
+});
+const samplesGeo = new THREE.BufferGeometry();
+samplesGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * 5000), 3));
+samplesGeo.setDrawRange(0, 0);
+const samples = new THREE.Points(samplesGeo, samplesMat);
+samples.renderOrder = 2;
+scene.add(samples);
+
+const rejectedMat = new THREE.PointsMaterial({
+  color: 0xFF1744, size: 0.20, sizeAttenuation: true,
+  transparent: true, opacity: 1.0, depthTest: false,
+});
+const rejectedGeo = new THREE.BufferGeometry();
+rejectedGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3 * 5000), 3));
+rejectedGeo.setDrawRange(0, 0);
+const rejected = new THREE.Points(rejectedGeo, rejectedMat);
+rejected.renderOrder = 2;
+scene.add(rejected);
+
+function gaussianPair(rng) {
+  let u1 = rng(), u2 = rng();
+  while (u1 < 1e-12) u1 = rng();
+  const r = Math.sqrt(-2 * Math.log(u1));
+  const theta = 2 * Math.PI * u2;
+  return [r * Math.cos(theta), r * Math.sin(theta)];
+}
+
+function mulberry32(seed) {
+  let s = seed >>> 0;
+  return function() {
+    s |= 0; s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+let rng = mulberry32(1);
+
+const SAMPLERS = {};
+SAMPLERS["mh"] = {
+  iterate: function(state, cfg, rng) {
+
+    const sigma = cfg.sigma;
+    const [eta0, eta1] = gaussianPair(rng);
+    const px0 = state.x0 + sigma * eta0;
+    const px1 = state.x1 + sigma * eta1;
+    const logAlpha = -(Ufn(px0, px1) - Ufn(state.x0, state.x1));
+    const accept = Math.log(rng()) < logAlpha;
+    return {
+      frames: [[state.x0, state.x1], [px0, px1]],
+      end: [px0, px1],
+      accept,
+      nextState: accept ? { x0: px0, x1: px1 } : state,
+      mh: {
+        start: [state.x0, state.x1],
+        proposal: [px0, px1],
+        sigma: sigma,
+      },
+    };
+
+  }
+};
+
+SAMPLERS["mala"] = {
+  iterate: function(state, cfg, rng) {
+
+    const eps = cfg.eps;
+    const eps2 = eps * eps;
+    const gFwd = gradUfn(state.x0, state.x1);
+    const muFwd0 = state.x0 - 0.5 * eps2 * gFwd[0];
+    const muFwd1 = state.x1 - 0.5 * eps2 * gFwd[1];
+    const [eta0, eta1] = gaussianPair(rng);
+    const px0 = muFwd0 + eps * eta0;
+    const px1 = muFwd1 + eps * eta1;
+
+    const gRev = gradUfn(px0, px1);
+    const muRev0 = px0 - 0.5 * eps2 * gRev[0];
+    const muRev1 = px1 - 0.5 * eps2 * gRev[1];
+
+    const dFwd0 = px0 - muFwd0, dFwd1 = px1 - muFwd1;
+    const dRev0 = state.x0 - muRev0, dRev1 = state.x1 - muRev1;
+    const logQfwd = -0.5 * (dFwd0*dFwd0 + dFwd1*dFwd1) / eps2;
+    const logQrev = -0.5 * (dRev0*dRev0 + dRev1*dRev1) / eps2;
+
+    const logAlpha = -(Ufn(px0, px1) - Ufn(state.x0, state.x1)) + (logQrev - logQfwd);
+    const accept = Math.log(rng()) < logAlpha;
+    return {
+      frames: [[state.x0, state.x1], [px0, px1]],
+      end: [px0, px1],
+      accept,
+      nextState: accept ? { x0: px0, x1: px1 } : state,
+      mala: {
+        start: [state.x0, state.x1],
+        muFwd: [muFwd0, muFwd1],
+        muRev: [muRev0, muRev1],
+        proposal: [px0, px1],
+        eps: eps,
+      },
+    };
+
+  }
+};
+
+SAMPLERS["hmc"] = {
+  iterate: function(state, cfg, rng) {
+
+    const eps = cfg.eps, L = cfg.L;
+    const [m0i, m1i] = gaussianPair(rng);
+    let m0 = m0i, m1 = m1i;
+    const E0 = Ufn(state.x0, state.x1) + 0.5 * (m0*m0 + m1*m1);
+
+    let x0 = state.x0, x1 = state.x1;
+    const traj = [[x0, x1]];
+    const momenta = [[m0, m1]];
+
+    for (let i = 0; i < L; i++) {
+      let g = gradUfn(x0, x1);
+      m0 -= 0.5 * eps * g[0];
+      m1 -= 0.5 * eps * g[1];
+      traj.push([x0, x1]);
+      momenta.push([m0, m1]);
+
+      x0 += eps * m0;
+      x1 += eps * m1;
+      traj.push([x0, x1]);
+      momenta.push([m0, m1]);
+
+      g = gradUfn(x0, x1);
+      m0 -= 0.5 * eps * g[0];
+      m1 -= 0.5 * eps * g[1];
+      traj.push([x0, x1]);
+      momenta.push([m0, m1]);
+    }
+
+    const E1 = Ufn(x0, x1) + 0.5 * (m0*m0 + m1*m1);
+    const logAlpha = -(E1 - E0);
+    const accept = Math.log(rng()) < logAlpha;
+    return {
+      frames: traj,
+      momenta: momenta,
+      end: [x0, x1],
+      accept,
+      nextState: accept ? { x0, x1 } : state,
+    };
+
+  }
+};
+
+let state, currentTraj, stepIdx, iterIdx, acceptedCount, totalCount, lastStepTime;
+let pendingDecision = null;
+let running = false;
+let frameInterval = DATA.default_speed_ms;
+let currentSamplerKey = DATA.default_sampler;
+let cfg = { n_iter: DATA.n_iter };
+let acceptedFlat = [];
+let rejectedFlat = [];
+
+const panelEl = document.getElementById('right-panel');
+const panelTitleEl = document.getElementById('right-title');
+const panelSubtitleEl = document.getElementById('right-subtitle');
+const panelCanvas = document.getElementById('right-canvas');
+const panelCtx = panelCanvas.getContext('2d');
+const panelWrap = document.getElementById('right-canvas-wrap');
+
+function panelViewBounds() {
+  const w = panelWrap.clientWidth, h = panelWrap.clientHeight;
+  panelCanvas.width = w * window.devicePixelRatio;
+  panelCanvas.height = h * window.devicePixelRatio;
+  panelCanvas.style.width = w + 'px';
+  panelCanvas.style.height = h + 'px';
+  panelCtx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+
+  const dataW = DATA.x_max - DATA.x_min;
+  const dataH = DATA.y_max - DATA.y_min;
+  const scale = Math.min(w / dataW, h / dataH) * 0.92;
+  const cx = w / 2, cy = h / 2;
+  const xMid = 0.5 * (DATA.x_min + DATA.x_max);
+  const yMid = 0.5 * (DATA.y_min + DATA.y_max);
+  return {
+    toX: (dx, _dy) => cx + (dx - xMid) * scale,
+    toY: (_dx, dy) => cy - (dy - yMid) * scale,
+    w, h, scale,
+  };
+}
+
+function drawPanelBackground(v) {
+  panelCtx.fillStyle = '#fafafa';
+  panelCtx.fillRect(0, 0, v.w, v.h);
+  const levels = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5];
+  panelCtx.lineWidth = 1;
+  const cosT = Math.SQRT1_2, sinT = Math.SQRT1_2;
+  const lam1 = 1.0 / (1.0 + currentRho);
+  const lam2 = 1.0 / (1.0 - currentRho);
+  for (const u of levels) {
+    const a = Math.sqrt(2 * u / lam1);
+    const b = Math.sqrt(2 * u / lam2);
+    panelCtx.strokeStyle = `rgba(120,120,140,${0.4 - u * 0.06})`;
+    panelCtx.beginPath();
+    for (let k = 0; k <= 64; k++) {
+      const t = (k / 64) * 2 * Math.PI;
+      const xp = a * Math.cos(t);
+      const yp = b * Math.sin(t);
+      const dx = cosT * xp - sinT * yp;
+      const dy = sinT * xp + cosT * yp;
+      const px = v.toX(dx, dy), py = v.toY(dx, dy);
+      if (k === 0) panelCtx.moveTo(px, py); else panelCtx.lineTo(px, py);
+    }
+    panelCtx.closePath();
+    panelCtx.stroke();
+  }
+}
+
+function drawMomentumPanel(k) {
+  const v = panelViewBounds();
+  drawPanelBackground(v);
+  if (!currentTraj || currentTraj.length === 0) return;
+  const momenta = pendingDecision && pendingDecision.momenta;
+
+  panelCtx.strokeStyle = '#FF1744';
+  panelCtx.lineWidth = 2;
+  panelCtx.beginPath();
+  for (let i = 0; i <= Math.min(k, currentTraj.length - 1); i++) {
+    const p = currentTraj[i];
+    const px = v.toX(p[0], p[1]), py = v.toY(p[0], p[1]);
+    if (i === 0) panelCtx.moveTo(px, py); else panelCtx.lineTo(px, py);
+  }
+  panelCtx.stroke();
+
+  if (momenta && momenta.length === currentTraj.length
+      && k >= 0 && k < currentTraj.length) {
+    const isTrailingKick = (k > 0) && ((k % 3) === 0);
+    const armColor = isTrailingKick ? '#10B981' : '#1E40AF';
+    panelCtx.strokeStyle = armColor;
+    panelCtx.fillStyle = armColor;
+    panelCtx.lineWidth = 1.5;
+    const arrowScale = 0.35;
+    const p = currentTraj[k];
+    const m = momenta[k];
+    const tipX = p[0] + arrowScale * m[0];
+    const tipY = p[1] + arrowScale * m[1];
+    const x0 = v.toX(p[0], p[1]), y0 = v.toY(p[0], p[1]);
+    const x1 = v.toX(tipX, tipY), y1 = v.toY(tipX, tipY);
+    panelCtx.beginPath();
+    panelCtx.moveTo(x0, y0); panelCtx.lineTo(x1, y1);
+    panelCtx.stroke();
+
+    const ang = Math.atan2(y1 - y0, x1 - x0);
+    const ah = 5;
+    panelCtx.beginPath();
+    panelCtx.moveTo(x1, y1);
+    panelCtx.lineTo(x1 - ah * Math.cos(ang - Math.PI / 7),
+                    y1 - ah * Math.sin(ang - Math.PI / 7));
+    panelCtx.lineTo(x1 - ah * Math.cos(ang + Math.PI / 7),
+                    y1 - ah * Math.sin(ang + Math.PI / 7));
+    panelCtx.closePath();
+    panelCtx.fill();
+  }
+
+  const sp = currentTraj[0];
+  if (sp) {
+    panelCtx.strokeStyle = '#000';
+    panelCtx.lineWidth = 2;
+    const sx = v.toX(sp[0], sp[1]), sy = v.toY(sp[0], sp[1]);
+    panelCtx.beginPath();
+    panelCtx.moveTo(sx - 5, sy - 5); panelCtx.lineTo(sx + 5, sy + 5);
+    panelCtx.moveTo(sx - 5, sy + 5); panelCtx.lineTo(sx + 5, sy - 5);
+    panelCtx.stroke();
+  }
+
+  if (k >= 0 && k < currentTraj.length) {
+    const p = currentTraj[k];
+    panelCtx.fillStyle = '#D85A30';
+    panelCtx.beginPath();
+    panelCtx.arc(v.toX(p[0], p[1]), v.toY(p[0], p[1]), 4, 0, 2 * Math.PI);
+    panelCtx.fill();
+  }
+
+  if (pendingDecision && k >= currentTraj.length - 1) {
+    const pp = pendingDecision.end;
+    panelCtx.fillStyle = pendingDecision.accept ? '#10B981' : '#FF1744';
+    panelCtx.strokeStyle = '#000';
+    panelCtx.lineWidth = 1;
+    panelCtx.beginPath();
+    panelCtx.arc(v.toX(pp[0], pp[1]), v.toY(pp[0], pp[1]), 5, 0, 2 * Math.PI);
+    panelCtx.fill();
+    panelCtx.stroke();
+  }
+  drawLegend(v, [
+    { kind: 'arrow', color: '#1E40AF', label: 'momentum (1st ½-kick)' },
+    { kind: 'line', color: '#FF1744', label: 'trajectory (drift)' },
+    { kind: 'arrow', color: '#10B981', label: 'momentum (2nd ½-kick)' },
+    { kind: 'x', label: 'start' },
+    { kind: 'dot-stroke',
+      color: pendingDecision && pendingDecision.accept ? '#10B981' : '#FF1744',
+      label: 'proposal' },
+  ]);
+}
+
+function drawArrow(x0, y0, x1, y1, headSize) {
+  panelCtx.beginPath();
+  panelCtx.moveTo(x0, y0);
+  panelCtx.lineTo(x1, y1);
+  panelCtx.stroke();
+  const ang = Math.atan2(y1 - y0, x1 - x0);
+  const ah = headSize || 5;
+  panelCtx.beginPath();
+  panelCtx.moveTo(x1, y1);
+  panelCtx.lineTo(x1 - ah * Math.cos(ang - Math.PI / 7),
+                  y1 - ah * Math.sin(ang - Math.PI / 7));
+  panelCtx.lineTo(x1 - ah * Math.cos(ang + Math.PI / 7),
+                  y1 - ah * Math.sin(ang + Math.PI / 7));
+  panelCtx.closePath();
+  panelCtx.fill();
+}
+
+function drawLegend(v, entries) {
+  if (!entries || !entries.length) return;
+  const pad = 8, rowH = 16, symW = 22, gap = 6;
+  panelCtx.save();
+  panelCtx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  panelCtx.textBaseline = 'middle';
+
+  let maxText = 0;
+  for (const e of entries) maxText = Math.max(maxText, panelCtx.measureText(e.label).width);
+  const boxW = pad * 2 + symW + gap + maxText;
+  const boxH = pad * 2 + entries.length * rowH - 4;
+  const x0 = 6, y0 = 6;
+  panelCtx.fillStyle = 'rgba(255,255,255,0.85)';
+  panelCtx.strokeStyle = 'rgba(0,0,0,0.10)';
+  panelCtx.lineWidth = 1;
+  panelCtx.beginPath();
+  panelCtx.rect(x0, y0, boxW, boxH);
+  panelCtx.fill();
+  panelCtx.stroke();
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const cy = y0 + pad + i * rowH + rowH / 2 - 2;
+    const sx = x0 + pad;
+    const sxMid = sx + symW / 2;
+    const sxEnd = sx + symW;
+    panelCtx.strokeStyle = e.color;
+    panelCtx.fillStyle = e.color;
+    panelCtx.lineWidth = 2;
+    if (e.kind === 'line') {
+      panelCtx.beginPath();
+      panelCtx.moveTo(sx, cy); panelCtx.lineTo(sxEnd, cy);
+      panelCtx.stroke();
+    } else if (e.kind === 'arrow') {
+      drawArrow(sx, cy, sxEnd - 3, cy, 4);
+    } else if (e.kind === 'dot') {
+      panelCtx.beginPath();
+      panelCtx.arc(sxMid, cy, 4, 0, 2 * Math.PI);
+      panelCtx.fill();
+    } else if (e.kind === 'dot-stroke') {
+      panelCtx.beginPath();
+      panelCtx.arc(sxMid, cy, 4, 0, 2 * Math.PI);
+      panelCtx.fill();
+      panelCtx.strokeStyle = '#000';
+      panelCtx.lineWidth = 1;
+      panelCtx.stroke();
+    } else if (e.kind === 'x') {
+      panelCtx.strokeStyle = '#000';
+      panelCtx.lineWidth = 2;
+      panelCtx.beginPath();
+      panelCtx.moveTo(sxMid - 4, cy - 4); panelCtx.lineTo(sxMid + 4, cy + 4);
+      panelCtx.moveTo(sxMid - 4, cy + 4); panelCtx.lineTo(sxMid + 4, cy - 4);
+      panelCtx.stroke();
+    } else if (e.kind === 'circle-dashed') {
+      panelCtx.lineWidth = 1;
+      panelCtx.setLineDash([3, 2]);
+      panelCtx.beginPath();
+      panelCtx.arc(sxMid, cy, 5, 0, 2 * Math.PI);
+      panelCtx.stroke();
+      panelCtx.setLineDash([]);
+    } else if (e.kind === 'gradient') {
+
+      const cols = e.colors || ['#7C3AED', '#2563EB', '#0891B2', '#059669'];
+      const bw = symW / cols.length;
+      for (let j = 0; j < cols.length; j++) {
+        panelCtx.fillStyle = cols[j];
+        panelCtx.fillRect(sx + j * bw, cy - 4, bw, 8);
+      }
+    }
+    panelCtx.fillStyle = '#333';
+    panelCtx.fillText(e.label, sx + symW + gap, cy);
+  }
+  panelCtx.restore();
+}
+
+function drawGradientField(v) {
+  const n = 14;
+  const xs = [], ys = [];
+  for (let i = 0; i < n; i++) {
+    xs.push(DATA.x_min + (i + 0.5) / n * (DATA.x_max - DATA.x_min));
+    ys.push(DATA.y_min + (i + 0.5) / n * (DATA.y_max - DATA.y_min));
+  }
+  panelCtx.strokeStyle = 'rgba(40,100,180,0.35)';
+  panelCtx.fillStyle = 'rgba(40,100,180,0.35)';
+  panelCtx.lineWidth = 1;
+  for (const xd of xs) for (const yd of ys) {
+    const g = gradUfn(xd, yd);
+    let gx = -g[0], gy = -g[1];
+    const mag = Math.sqrt(gx*gx + gy*gy);
+    if (mag < 1e-9) continue;
+
+    const armPx = Math.min(v.scale * 0.3, 14);
+    gx = (gx / mag) * armPx / v.scale;
+    gy = (gy / mag) * armPx / v.scale;
+    const x0 = v.toX(xd, yd), y0 = v.toY(xd, yd);
+    const x1 = v.toX(xd + gx, yd + gy), y1 = v.toY(xd + gx, yd + gy);
+    drawArrow(x0, y0, x1, y1, 3);
+  }
+}
+
+function drawMALAPanel(k) {
+  const v = panelViewBounds();
+  drawPanelBackground(v);
+  drawGradientField(v);
+  if (!currentTraj || currentTraj.length === 0) return;
+  const m = pendingDecision && pendingDecision.mala;
+  if (!m) return;
+  const sx = v.toX(m.start[0], m.start[1]), sy = v.toY(m.start[0], m.start[1]);
+  const mfx = v.toX(m.muFwd[0], m.muFwd[1]), mfy = v.toY(m.muFwd[0], m.muFwd[1]);
+  const px = v.toX(m.proposal[0], m.proposal[1]), py = v.toY(m.proposal[0], m.proposal[1]);
+
+  panelCtx.strokeStyle = '#059669';
+  panelCtx.fillStyle = '#059669';
+  panelCtx.lineWidth = 2;
+  drawArrow(sx, sy, mfx, mfy, 6);
+
+  panelCtx.strokeStyle = '#7C3AED';
+  panelCtx.fillStyle = '#7C3AED';
+  drawArrow(mfx, mfy, px, py, 6);
+
+  panelCtx.strokeStyle = '#F97316';
+  panelCtx.setLineDash([4, 3]);
+  panelCtx.lineWidth = 1.5;
+  panelCtx.beginPath();
+  panelCtx.arc(mfx, mfy, m.eps * v.scale, 0, 2 * Math.PI);
+  panelCtx.stroke();
+
+  const mrx = v.toX(m.muRev[0], m.muRev[1]), mry = v.toY(m.muRev[0], m.muRev[1]);
+  panelCtx.setLineDash([]);
+  panelCtx.strokeStyle = 'rgba(5,150,105,0.45)';
+  panelCtx.fillStyle = 'rgba(5,150,105,0.45)';
+  panelCtx.lineWidth = 1.5;
+  drawArrow(px, py, mrx, mry, 5);
+
+  panelCtx.strokeStyle = '#0EA5E9';
+  panelCtx.setLineDash([4, 3]);
+  panelCtx.lineWidth = 1.5;
+  panelCtx.beginPath();
+  panelCtx.arc(mrx, mry, m.eps * v.scale, 0, 2 * Math.PI);
+  panelCtx.stroke();
+  panelCtx.setLineDash([]);
+
+  panelCtx.strokeStyle = '#000';
+  panelCtx.lineWidth = 2;
+  panelCtx.beginPath();
+  panelCtx.moveTo(sx - 5, sy - 5); panelCtx.lineTo(sx + 5, sy + 5);
+  panelCtx.moveTo(sx - 5, sy + 5); panelCtx.lineTo(sx + 5, sy - 5);
+  panelCtx.stroke();
+
+  panelCtx.fillStyle = pendingDecision.accept ? '#10B981' : '#FF1744';
+  panelCtx.strokeStyle = '#000';
+  panelCtx.lineWidth = 1;
+  panelCtx.beginPath();
+  panelCtx.arc(px, py, 5, 0, 2 * Math.PI);
+  panelCtx.fill();
+  panelCtx.stroke();
+  drawLegend(v, [
+    { kind: 'arrow', color: 'rgba(40,100,180,0.6)', label: '-∇U field' },
+    { kind: 'arrow', color: '#059669', label: 'drift' },
+    { kind: 'arrow', color: '#7C3AED', label: 'noise' },
+    { kind: 'circle-dashed', color: '#F97316', label: 'q(·|x)' },
+    { kind: 'circle-dashed', color: '#0EA5E9', label: 'q(·|x′)' },
+    { kind: 'x', label: 'start' },
+    { kind: 'dot-stroke', color: pendingDecision.accept ? '#10B981' : '#FF1744',
+      label: 'proposal' },
+  ]);
+}
+
+function drawMHPanel(k) {
+  const v = panelViewBounds();
+  drawPanelBackground(v);
+  if (!currentTraj || currentTraj.length === 0) return;
+  const m = pendingDecision && pendingDecision.mh;
+  if (!m) return;
+  const sx = v.toX(m.start[0], m.start[1]), sy = v.toY(m.start[0], m.start[1]);
+  const px = v.toX(m.proposal[0], m.proposal[1]), py = v.toY(m.proposal[0], m.proposal[1]);
+
+  panelCtx.strokeStyle = '#7C3AED';
+  panelCtx.fillStyle = '#7C3AED';
+  panelCtx.lineWidth = 2;
+  drawArrow(sx, sy, px, py, 6);
+
+  panelCtx.strokeStyle = '#000';
+  panelCtx.lineWidth = 2;
+  panelCtx.beginPath();
+  panelCtx.moveTo(sx - 5, sy - 5); panelCtx.lineTo(sx + 5, sy + 5);
+  panelCtx.moveTo(sx - 5, sy + 5); panelCtx.lineTo(sx + 5, sy - 5);
+  panelCtx.stroke();
+
+  panelCtx.fillStyle = pendingDecision.accept ? '#10B981' : '#FF1744';
+  panelCtx.strokeStyle = '#000';
+  panelCtx.lineWidth = 1;
+  panelCtx.beginPath();
+  panelCtx.arc(px, py, 5, 0, 2 * Math.PI);
+  panelCtx.fill();
+  panelCtx.stroke();
+  drawLegend(v, [
+    { kind: 'arrow', color: '#7C3AED', label: 'jump' },
+    { kind: 'x', label: 'start' },
+    { kind: 'dot-stroke',
+      color: pendingDecision.accept ? '#10B981' : '#FF1744',
+      label: 'proposal' },
+  ]);
+}
+
+function drawRightPanel(k) {
+  const meta = DATA.samplers.find(s => s.key === currentSamplerKey);
+  const kind = meta && meta.right_panel;
+  if (kind === 'momentum') drawMomentumPanel(k);
+  else if (kind === 'mala') drawMALAPanel(k);
+  else if (kind === 'mh') drawMHPanel(k);
+}
+
+function updateRightSubtitle() {
+  const meta = DATA.samplers.find(s => s.key === currentSamplerKey);
+  const kind = meta && meta.right_panel;
+  if (kind === 'momentum') {
+    if (!pendingDecision) { panelSubtitleEl.textContent = ''; return; }
+    const L = currentTraj.length - 1;
+    panelTitleEl.textContent = 'Position + momentum';
+    panelSubtitleEl.textContent =
+      `iter ${iterIdx + 1}  ·  step ${stepIdx}/${L}  ·  L=${L} leapfrog steps`;
+  } else if (kind === 'mala') {
+    panelTitleEl.textContent = 'Proposal = drift + noise';
+    if (!pendingDecision || !pendingDecision.mala) {
+      panelSubtitleEl.textContent = `iter ${iterIdx + 1}`;
+      return;
+    }
+    const m = pendingDecision.mala;
+    const dx = m.proposal[0] - m.start[0], dy = m.proposal[1] - m.start[1];
+    const driftX = m.muFwd[0] - m.start[0], driftY = m.muFwd[1] - m.start[1];
+    const noiseX = m.proposal[0] - m.muFwd[0], noiseY = m.proposal[1] - m.muFwd[1];
+    const driftMag = Math.sqrt(driftX*driftX + driftY*driftY);
+    const noiseMag = Math.sqrt(noiseX*noiseX + noiseY*noiseY);
+    panelSubtitleEl.textContent =
+      `iter ${iterIdx + 1}  ·  |drift|=${driftMag.toFixed(2)}  ·  |noise|=${noiseMag.toFixed(2)}`;
+  } else if (kind === 'mh') {
+    panelTitleEl.textContent = 'Proposal';
+    if (!pendingDecision || !pendingDecision.mh) {
+      panelSubtitleEl.textContent = `iter ${iterIdx + 1}`;
+      return;
+    }
+    const m = pendingDecision.mh;
+    const dx = m.proposal[0] - m.start[0], dy = m.proposal[1] - m.start[1];
+    const jump = Math.sqrt(dx*dx + dy*dy);
+    panelSubtitleEl.textContent =
+      `iter ${iterIdx + 1}  ·  σ=${m.sigma.toFixed(2)}  ·  |jump|=${jump.toFixed(2)}`;
+  }
+}
+
+function clearRightPanel() {
+  const v = panelViewBounds();
+  drawPanelBackground(v);
+  panelSubtitleEl.textContent = '';
+}
+
+function startIteration() {
+  const result = SAMPLERS[currentSamplerKey].iterate(state, cfg, rng);
+  currentTraj = result.frames;
+  pendingDecision = result;
+  stepIdx = 0;
+  updateTrailUpTo(0);
+  placePuck(currentTraj[0]);
+  if (document.body.classList.contains('has-right-panel')) {
+    drawRightPanel(0);
+    updateRightSubtitle();
+  }
+}
+
+function placePuck(p) {
+  const h = heightFromU(Ufn(p[0], p[1])) + 0.06;
+  const [wx, wy, wz] = worldFromData(p[0], p[1], h);
+  puck.position.set(wx, wy, wz);
+}
+
+function updateTrailUpTo(k) {
+  const arr = trailGeo.attributes.position.array;
+  let needed = (k + 1) * 3;
+  if (arr.length < needed) {
+    const bigger = new Float32Array(needed * 2);
+    bigger.set(arr);
+    trailGeo.setAttribute('position', new THREE.BufferAttribute(bigger, 3));
+  }
+  const pos = trailGeo.attributes.position;
+  for (let i = 0; i <= k; i++) {
+    const p = currentTraj[i];
+    const h = heightFromU(Ufn(p[0], p[1])) + 0.04;
+    const [wx, wy, wz] = worldFromData(p[0], p[1], h);
+    pos.array[3*i] = wx;
+    pos.array[3*i+1] = wy;
+    pos.array[3*i+2] = wz;
+  }
+  trailGeo.setDrawRange(0, k + 1);
+  pos.needsUpdate = true;
+}
+
+function pushDot(p, flat, geo) {
+  flat.push(p[0], p[1]);
+  const arr = geo.attributes.position.array;
+  const idx = (flat.length / 2 - 1);
+  let needed = (idx + 1) * 3;
+  if (arr.length < needed) {
+    const bigger = new Float32Array(needed * 2);
+    bigger.set(arr);
+    geo.setAttribute('position', new THREE.BufferAttribute(bigger, 3));
+  }
+  const pos = geo.attributes.position;
+  const h = heightFromU(Ufn(p[0], p[1])) + 0.05;
+  const [wx, wy, wz] = worldFromData(p[0], p[1], h);
+  pos.array[3*idx] = wx;
+  pos.array[3*idx+1] = wy;
+  pos.array[3*idx+2] = wz;
+  geo.setDrawRange(0, idx + 1);
+  pos.needsUpdate = true;
+}
+
+function pushAcceptedSample(p) { pushDot(p, acceptedFlat, samplesGeo); }
+function pushRejectedSample(p) { pushDot(p, rejectedFlat, rejectedGeo); }
+
+function clearSamples() {
+  acceptedFlat = [];
+  samplesGeo.setDrawRange(0, 0);
+  rejectedFlat = [];
+  rejectedGeo.setDrawRange(0, 0);
+}
+
+function resetChain() {
+  state = { x0: DATA.x0[0], x1: DATA.x0[1] };
+  rng = mulberry32(1);
+  iterIdx = 0;
+  acceptedCount = 0;
+  totalCount = 0;
+  clearSamples();
+  startIteration();
+  lastStepTime = performance.now();
+  updateStatus();
+}
+
+function updateStatus() {
+  const accRate = totalCount > 0 ? Math.round(100 * acceptedCount / totalCount) : 0;
+  document.getElementById('status').textContent =
+    `iter ${iterIdx}/${cfg.n_iter}  ·  accepted ${acceptedCount}/${totalCount} (${accRate}%)`;
+}
+
+function tick(now) {
+  controls.update();
+  if (running && currentTraj && (now - lastStepTime) >= frameInterval) {
+    stepIdx++;
+    if (stepIdx >= currentTraj.length) {
+      totalCount++;
+      if (pendingDecision.accept) {
+        acceptedCount++;
+        pushAcceptedSample(pendingDecision.end);
+      } else {
+        pushRejectedSample(pendingDecision.end);
+      }
+      state = pendingDecision.nextState;
+      iterIdx++;
+      if (iterIdx >= cfg.n_iter) {
+        running = false;
+        document.getElementById('play-btn').classList.remove('active');
+      } else {
+        startIteration();
+      }
+      updateStatus();
+    } else {
+      updateTrailUpTo(stepIdx);
+      placePuck(currentTraj[stepIdx]);
+      if (document.body.classList.contains('has-right-panel')) {
+        drawRightPanel(stepIdx);
+        updateRightSubtitle();
+      }
+    }
+    lastStepTime = now;
+  }
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+
+const samplerSelect = document.getElementById('sampler-select');
+DATA.samplers.forEach(s => {
+  const opt = document.createElement('option');
+  opt.value = s.key;
+  opt.textContent = s.label;
+  if (s.key === DATA.default_sampler) opt.selected = true;
+  samplerSelect.appendChild(opt);
+});
+
+function renderSamplerSliders(key) {
+  const slotA = document.getElementById('sampler-sliders-A');
+  const slotB = document.getElementById('sampler-sliders-B');
+  slotA.innerHTML = '';
+  slotB.innerHTML = '';
+  const meta = DATA.samplers.find(s => s.key === key);
+  if (!meta) return;
+  meta.sliders.forEach((sp, i) => {
+    cfg[sp.id] = sp.default;
+    const div = document.createElement('div');
+    div.className = 'ctrl';
+    div.innerHTML = `
+      <label>${sp.label}</label>
+      <input type="range" id="param-${sp.id}" min="${sp.min}" max="${sp.max}" step="${sp.step}" value="${sp.default}">
+      <span class="value" id="paramval-${sp.id}">${formatVal(sp.default, sp.step)}</span>
+    `;
+    (i % 2 === 0 ? slotA : slotB).appendChild(div);
+    const sliderEl = div.querySelector('input');
+    const valueEl = div.querySelector('span');
+    sliderEl.addEventListener('input', () => {
+      const v = parseFloat(sliderEl.value);
+      cfg[sp.id] = v;
+      valueEl.textContent = formatVal(v, sp.step);
+      resetChain();
+    });
+  });
+}
+
+function formatVal(v, step) {
+  if (Number.isInteger(step) && Number.isInteger(v)) return String(v);
+  const decimals = step < 0.1 ? 2 : (step < 1 ? 1 : 0);
+  return v.toFixed(decimals);
+}
+
+function applySamplerLayout(key) {
+  const meta = DATA.samplers.find(s => s.key === key);
+  const showPanel = !!(meta && meta.right_panel);
+  document.body.classList.toggle('has-right-panel', showPanel);
+
+  requestAnimationFrame(() => {
+    camera.aspect = canvasWrap.clientWidth / canvasWrap.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(canvasWrap.clientWidth, canvasWrap.clientHeight);
+    if (showPanel) clearRightPanel();
+  });
+}
+
+samplerSelect.addEventListener('change', () => {
+  currentSamplerKey = samplerSelect.value;
+  applySamplerLayout(currentSamplerKey);
+  renderSamplerSliders(currentSamplerKey);
+  resetChain();
+});
+
+const iterSlider = document.getElementById('iter-slider');
+const iterValue = document.getElementById('iter-value');
+iterSlider.addEventListener('input', () => {
+  cfg.n_iter = parseInt(iterSlider.value);
+  iterValue.textContent = cfg.n_iter;
+  updateStatus();
+});
+
+const rhoSlider = document.getElementById('rho-slider');
+const rhoValue = document.getElementById('rho-value');
+rhoSlider.addEventListener('input', () => {
+  currentRho = parseFloat(rhoSlider.value);
+  rhoValue.textContent = currentRho.toFixed(2);
+  applySurfaceHeights(surface.geometry);
+  resetChain();
+});
+
+document.getElementById('play-btn').addEventListener('click', () => {
+  running = true;
+  document.getElementById('play-btn').classList.add('active');
+  lastStepTime = performance.now();
+});
+document.getElementById('pause-btn').addEventListener('click', () => {
+  running = false;
+  document.getElementById('play-btn').classList.remove('active');
+});
+document.getElementById('reset-btn').addEventListener('click', () => {
+  running = true;
+  document.getElementById('play-btn').classList.add('active');
+  resetChain();
+});
+
+document.querySelectorAll('.speed-btn').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.speed-btn').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    frameInterval = parseInt(b.dataset.speed);
+  });
+});
+
+window.addEventListener('resize', () => {
+  camera.aspect = canvasWrap.clientWidth / canvasWrap.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(canvasWrap.clientWidth, canvasWrap.clientHeight);
+  if (document.body.classList.contains('has-right-panel')) {
+    drawRightPanel(stepIdx);
+  }
+});
+
+renderSamplerSliders(DATA.default_sampler);
+applySamplerLayout(DATA.default_sampler);
+cfg.n_iter = DATA.n_iter;
+resetChain();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
